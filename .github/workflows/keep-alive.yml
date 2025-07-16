@@ -1,0 +1,29 @@
+name: Keep Bot Alive
+
+on:
+  schedule:
+    # Запускается каждые 10 минут
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Позволяет запускать вручную
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Ping Bot
+      run: |
+        echo "🔄 Пингуем бота для предотвращения автосна..."
+        
+        # Замените URL на ваш актуальный URL бота на Render.com
+        BOT_URL="https://your-bot-name.onrender.com"
+        
+        response=$(curl -s -o /dev/null -w "%{http_code}" "$BOT_URL/health" || echo "000")
+        
+        if [ "$response" = "200" ]; then
+          echo "✅ Пинг успешен! Код ответа: $response"
+        else
+          echo "⚠️ Пинг неудачен. Код ответа: $response"
+        fi
+        
+        echo "⏰ Следующий пинг через 10 минут" 
