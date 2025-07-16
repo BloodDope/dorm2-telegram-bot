@@ -1,74 +1,53 @@
-import asyncpg
+import aiosqlite
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from loguru import logger
 from config.settings import get_settings
+import os
 
 class Database:
-    def __init__(self, database_url: str):
-        self.database_url = database_url
-        self.pool = None
-    
-    async def create_pool(self):
-        """Создание пула соединений"""
-        try:
-            self.pool = await asyncpg.create_pool(
-                self.database_url,
-                min_size=1,
-                max_size=10,
-                command_timeout=60
-            )
-            logger.info("Пул соединений PostgreSQL создан")
-        except Exception as e:
-            logger.error(f"Ошибка создания пула соединений: {e}")
-            raise
-    
-    async def close_pool(self):
-        """Закрытие пула соединений"""
-        if self.pool:
-            await self.pool.close()
-            logger.info("Пул соединений PostgreSQL закрыт")
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        # Создаем директорию если не существует
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     async def init_database(self):
         """Инициализация базы данных и создание таблиц"""
-        if not self.pool:
-            await self.create_pool()
-            
-        async with self.pool.acquire() as conn:
+        async with aiosqlite.connect(self.db_path) as db:
             # Таблица пользователей
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
+                    user_id INTEGER PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
                     last_name TEXT,
                     is_admin BOOLEAN DEFAULT FALSE,
-                    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    registration_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
                     is_active BOOLEAN DEFAULT TRUE
                 )
             """)
             
             # Таблица статистики использования разделов
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS section_stats (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     section_name TEXT,
-                    access_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    access_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
             
             # Таблица обратной связи
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     feedback_type TEXT,
                     message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     is_read BOOLEAN DEFAULT FALSE,
                     admin_response TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
@@ -76,63 +55,65 @@ class Database:
             """)
             
             # Таблица настроек и ссылок
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
             # Таблица видео
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS videos (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     category TEXT,
                     title TEXT,
                     description TEXT,
                     file_id TEXT,
                     file_path TEXT,
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     is_active BOOLEAN DEFAULT TRUE
                 )
             """)
             
             # Таблица ссылок на чаты этажей
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS floor_chats (
                     floor_number INTEGER PRIMARY KEY,
                     chat_link TEXT,
                     chat_title TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
             # Таблица массовых рассылок
-            await conn.execute("""
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcasts (
-                    id SERIAL PRIMARY KEY,
-                    admin_id BIGINT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
                     message TEXT,
                     sent_count INTEGER DEFAULT 0,
                     failed_count INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    completed_at TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME,
                     FOREIGN KEY (admin_id) REFERENCES users (user_id)
                 )
             """)
             
-            logger.info("База данных PostgreSQL инициализирована")
+            await db.commit()
+            logger.info("База данных SQLite инициализирована")
 
     # Методы для работы с пользователями
     
     async def user_exists(self, user_id: int) -> bool:
         """Проверка существования пользователя"""
         try:
-            async with self.pool.acquire() as conn:
-                result = await conn.fetchval("""
-                    SELECT 1 FROM users WHERE user_id = $1
-                """, user_id)
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
+                    SELECT 1 FROM users WHERE user_id = ?
+                """, (user_id,))
+                result = await cursor.fetchone()
                 return result is not None
         except Exception as e:
             logger.error(f"Ошибка при проверке пользователя {user_id}: {e}")
@@ -142,17 +123,13 @@ class Database:
                        first_name: str = None, last_name: str = None) -> bool:
         """Добавление нового пользователя"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO users 
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO users 
                     (user_id, username, first_name, last_name, last_activity)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        username = EXCLUDED.username,
-                        first_name = EXCLUDED.first_name,
-                        last_name = EXCLUDED.last_name,
-                        last_activity = EXCLUDED.last_activity
-                """, user_id, username, first_name, last_name, datetime.now())
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now()))
+                await db.commit()
                 logger.info(f"Пользователь {user_id} добавлен/обновлен")
                 return True
         except Exception as e:
@@ -162,21 +139,23 @@ class Database:
     async def update_user_activity(self, user_id: int):
         """Обновление времени последней активности пользователя"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    UPDATE users SET last_activity = $1 WHERE user_id = $2
-                """, datetime.now(), user_id)
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    UPDATE users SET last_activity = ? WHERE user_id = ?
+                """, (datetime.now(), user_id))
+                await db.commit()
         except Exception as e:
             logger.error(f"Ошибка при обновлении активности пользователя {user_id}: {e}")
     
     async def is_admin(self, user_id: int) -> bool:
         """Проверка, является ли пользователь администратором"""
         try:
-            async with self.pool.acquire() as conn:
-                result = await conn.fetchval("""
-                    SELECT is_admin FROM users WHERE user_id = $1
-                """, user_id)
-                return result if result else False
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
+                    SELECT is_admin FROM users WHERE user_id = ?
+                """, (user_id,))
+                result = await cursor.fetchone()
+                return result[0] if result else False
         except Exception as e:
             logger.error(f"Ошибка при проверке прав администратора {user_id}: {e}")
             return False
@@ -184,10 +163,11 @@ class Database:
     async def set_admin(self, user_id: int, is_admin: bool = True):
         """Установка прав администратора"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    UPDATE users SET is_admin = $1 WHERE user_id = $2
-                """, is_admin, user_id)
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    UPDATE users SET is_admin = ? WHERE user_id = ?
+                """, (is_admin, user_id))
+                await db.commit()
                 logger.info(f"Права администратора для {user_id} изменены на {is_admin}")
         except Exception as e:
             logger.error(f"Ошибка при изменении прав администратора {user_id}: {e}")
@@ -197,41 +177,46 @@ class Database:
     async def log_section_access(self, user_id: int, section_name: str):
         """Логирование обращения к разделу"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
                     INSERT INTO section_stats (user_id, section_name)
-                    VALUES ($1, $2)
-                """, user_id, section_name)
+                    VALUES (?, ?)
+                """, (user_id, section_name))
+                await db.commit()
         except Exception as e:
             logger.error(f"Ошибка при логировании доступа к разделу: {e}")
     
     async def get_user_stats(self) -> Dict:
         """Получение статистики пользователей"""
         try:
-            async with self.pool.acquire() as conn:
+            async with aiosqlite.connect(self.db_path) as db:
                 # Общее количество пользователей
-                total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+                cursor = await db.execute("SELECT COUNT(*) FROM users")
+                total_users = (await cursor.fetchone())[0]
                 
                 # Активные пользователи за сегодня
                 today = datetime.now().date()
-                active_today = await conn.fetchval("""
+                cursor = await db.execute("""
                     SELECT COUNT(*) FROM users 
-                    WHERE DATE(last_activity) = $1
-                """, today)
+                    WHERE DATE(last_activity) = ?
+                """, (today,))
+                active_today = (await cursor.fetchone())[0]
                 
                 # Активные пользователи за неделю
                 week_ago = datetime.now() - timedelta(days=7)
-                active_week = await conn.fetchval("""
+                cursor = await db.execute("""
                     SELECT COUNT(*) FROM users 
-                    WHERE last_activity >= $1
-                """, week_ago)
+                    WHERE last_activity >= ?
+                """, (week_ago,))
+                active_week = (await cursor.fetchone())[0]
                 
                 # Активные пользователи за месяц
                 month_ago = datetime.now() - timedelta(days=30)
-                active_month = await conn.fetchval("""
+                cursor = await db.execute("""
                     SELECT COUNT(*) FROM users 
-                    WHERE last_activity >= $1
-                """, month_ago)
+                    WHERE last_activity >= ?
+                """, (month_ago,))
+                active_month = (await cursor.fetchone())[0]
                 
                 return {
                     "total_users": total_users,
@@ -246,16 +231,16 @@ class Database:
     async def get_popular_sections(self, limit: int = 5) -> List[Tuple[str, int]]:
         """Получение популярных разделов"""
         try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     SELECT section_name, COUNT(*) as access_count
                     FROM section_stats
-                    WHERE access_time >= $1
+                    WHERE access_time >= ?
                     GROUP BY section_name
                     ORDER BY access_count DESC
-                    LIMIT $2
-                """, datetime.now() - timedelta(days=30), limit)
-                return [(row['section_name'], row['access_count']) for row in rows]
+                    LIMIT ?
+                """, (datetime.now() - timedelta(days=30), limit))
+                return await cursor.fetchall()
         except Exception as e:
             logger.error(f"Ошибка при получении популярных разделов: {e}")
             return []
@@ -265,13 +250,13 @@ class Database:
     async def add_feedback(self, user_id: int, feedback_type: str, message: str) -> int:
         """Добавление обратной связи"""
         try:
-            async with self.pool.acquire() as conn:
-                feedback_id = await conn.fetchval("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     INSERT INTO feedback (user_id, feedback_type, message)
-                    VALUES ($1, $2, $3)
-                    RETURNING id
-                """, user_id, feedback_type, message)
-                return feedback_id
+                    VALUES (?, ?, ?)
+                """, (user_id, feedback_type, message))
+                await db.commit()
+                return cursor.lastrowid
         except Exception as e:
             logger.error(f"Ошибка при добавлении обратной связи: {e}")
             return 0
@@ -279,14 +264,16 @@ class Database:
     async def get_feedback_stats(self) -> Dict:
         """Получение статистики обратной связи"""
         try:
-            async with self.pool.acquire() as conn:
+            async with aiosqlite.connect(self.db_path) as db:
                 # Новые сообщения (непрочитанные)
-                new_feedback = await conn.fetchval("""
+                cursor = await db.execute("""
                     SELECT COUNT(*) FROM feedback WHERE is_read = FALSE
                 """)
+                new_feedback = (await cursor.fetchone())[0]
                 
                 # Всего сообщений
-                total_feedback = await conn.fetchval("SELECT COUNT(*) FROM feedback")
+                cursor = await db.execute("SELECT COUNT(*) FROM feedback")
+                total_feedback = (await cursor.fetchone())[0]
                 
                 return {
                     "new_feedback": new_feedback,
@@ -299,8 +286,8 @@ class Database:
     async def get_unread_feedback(self) -> List[Dict]:
         """Получение непрочитанной обратной связи"""
         try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     SELECT f.id, f.user_id, f.feedback_type, f.message, 
                            f.created_at, u.username, u.first_name, u.last_name
                     FROM feedback f
@@ -308,17 +295,18 @@ class Database:
                     WHERE f.is_read = FALSE
                     ORDER BY f.created_at DESC
                 """)
+                rows = await cursor.fetchall()
                 
                 return [
                     {
-                        "id": row['id'],
-                        "user_id": row['user_id'],
-                        "feedback_type": row['feedback_type'],
-                        "message": row['message'],
-                        "created_at": row['created_at'],
-                        "username": row['username'],
-                        "first_name": row['first_name'],
-                        "last_name": row['last_name']
+                        "id": row[0],
+                        "user_id": row[1],
+                        "feedback_type": row[2],
+                        "message": row[3],
+                        "created_at": row[4],
+                        "username": row[5],
+                        "first_name": row[6],
+                        "last_name": row[7]
                     }
                     for row in rows
                 ]
@@ -331,11 +319,12 @@ class Database:
     async def get_setting(self, key: str) -> Optional[str]:
         """Получение настройки по ключу"""
         try:
-            async with self.pool.acquire() as conn:
-                result = await conn.fetchval("""
-                    SELECT value FROM bot_settings WHERE key = $1
-                """, key)
-                return result
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
+                    SELECT value FROM bot_settings WHERE key = ?
+                """, (key,))
+                result = await cursor.fetchone()
+                return result[0] if result else None
         except Exception as e:
             logger.error(f"Ошибка при получении настройки {key}: {e}")
             return None
@@ -343,14 +332,12 @@ class Database:
     async def set_setting(self, key: str, value: str):
         """Установка настройки"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO bot_settings (key, value, updated_at)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (key) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        updated_at = EXCLUDED.updated_at
-                """, key, value, datetime.now())
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                """, (key, value, datetime.now()))
+                await db.commit()
         except Exception as e:
             logger.error(f"Ошибка при установке настройки {key}: {e}")
     
@@ -360,13 +347,13 @@ class Database:
                        file_id: str, file_path: str = None) -> int:
         """Добавление видео"""
         try:
-            async with self.pool.acquire() as conn:
-                video_id = await conn.fetchval("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     INSERT INTO videos (category, title, description, file_id, file_path)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING id
-                """, category, title, description, file_id, file_path)
-                return video_id
+                    VALUES (?, ?, ?, ?, ?)
+                """, (category, title, description, file_id, file_path))
+                await db.commit()
+                return cursor.lastrowid
         except Exception as e:
             logger.error(f"Ошибка при добавлении видео: {e}")
             return 0
@@ -374,21 +361,22 @@ class Database:
     async def get_videos_by_category(self, category: str) -> List[Dict]:
         """Получение видео по категории"""
         try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     SELECT id, title, description, file_id, file_path
                     FROM videos
-                    WHERE category = $1 AND is_active = TRUE
+                    WHERE category = ? AND is_active = TRUE
                     ORDER BY added_at DESC
-                """, category)
+                """, (category,))
+                rows = await cursor.fetchall()
                 
                 return [
                     {
-                        "id": row['id'],
-                        "title": row['title'],
-                        "description": row['description'],
-                        "file_id": row['file_id'],
-                        "file_path": row['file_path']
+                        "id": row[0],
+                        "title": row[1],
+                        "description": row[2],
+                        "file_id": row[3],
+                        "file_path": row[4]
                     }
                     for row in rows
                 ]
@@ -401,32 +389,30 @@ class Database:
     async def set_floor_chat(self, floor_number: int, chat_link: str, chat_title: str = None):
         """Установка ссылки на чат этажа"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO floor_chats 
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO floor_chats 
                     (floor_number, chat_link, chat_title, updated_at)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (floor_number) DO UPDATE SET
-                        chat_link = EXCLUDED.chat_link,
-                        chat_title = EXCLUDED.chat_title,
-                        updated_at = EXCLUDED.updated_at
-                """, floor_number, chat_link, chat_title, datetime.now())
+                    VALUES (?, ?, ?, ?)
+                """, (floor_number, chat_link, chat_title, datetime.now()))
+                await db.commit()
         except Exception as e:
             logger.error(f"Ошибка при установке чата этажа {floor_number}: {e}")
     
     async def get_floor_chat(self, floor_number: int) -> Optional[Dict]:
         """Получение ссылки на чат этажа"""
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow("""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("""
                     SELECT chat_link, chat_title FROM floor_chats 
-                    WHERE floor_number = $1
-                """, floor_number)
+                    WHERE floor_number = ?
+                """, (floor_number,))
+                result = await cursor.fetchone()
                 
-                if row:
+                if result:
                     return {
-                        "chat_link": row['chat_link'],
-                        "chat_title": row['chat_title']
+                        "chat_link": result[0],
+                        "chat_title": result[1]
                     }
                 return None
         except Exception as e:
@@ -434,25 +420,11 @@ class Database:
             return None
 
 # Глобальный экземпляр базы данных
-db = None
+db = Database(get_settings().database_path)
 
 async def init_db():
     """Инициализация базы данных"""
-    global db
-    settings = get_settings()
-    
-    if not settings.database_url:
-        logger.error("DATABASE_URL не настроен")
-        raise ValueError("DATABASE_URL не найден в переменных окружения")
-    
-    db = Database(settings.database_url)
     await db.init_database()
-
-async def close_db():
-    """Закрытие соединения с базой данных"""
-    global db
-    if db:
-        await db.close_pool()
 
 # Функции-обертки для удобства
 async def add_user(user_id: int, username: str = None, 

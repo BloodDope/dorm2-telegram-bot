@@ -3,7 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from config.settings import get_settings
-from database.database import init_db, close_db
+from database.database import init_db
 from handlers import register_handlers
 from loguru import logger
 
@@ -37,11 +37,8 @@ async def main():
         logger.error(f"Ошибка при запуске бота: {e}")
         raise
     finally:
-        # Закрытие соединений
         if bot:
             await bot.session.close()
-        await close_db()
-        logger.info("Соединения закрыты")
 
 if __name__ == "__main__":
     # Настройка логирования
