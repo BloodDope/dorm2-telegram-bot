@@ -14,7 +14,7 @@ class Settings:
     admin_ids: List[int]
     
     # Настройки базы данных
-    database_path: str = "data/bot.db"
+    database_url: str = ""
     
     # Контент настройки
     official_channel_link: str = ""
@@ -45,7 +45,7 @@ def get_settings() -> Settings:
     return Settings(
         bot_token=bot_token,
         admin_ids=admin_ids,
-        database_path=os.getenv("DATABASE_PATH", "data/bot.db"),
+        database_url=os.getenv("DATABASE_URL", ""),
         official_channel_link=os.getenv("OFFICIAL_CHANNEL_LINK", ""),
         general_chat_link=os.getenv("GENERAL_CHAT_LINK", ""),
         guide_website_link=os.getenv("GUIDE_WEBSITE_LINK", ""),
