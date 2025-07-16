@@ -1,0 +1,42 @@
+name: Platform Rotation
+
+on:
+  schedule:
+    # Запуск каждый день в 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Ручной запуск
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Determine platform
+      id: platform
+      run: |
+        day=$(date +%d | sed 's/^0*//')
+        if [ $day -le 20 ]; then
+          echo "platform=railway" >> $GITHUB_OUTPUT
+        else
+          echo "platform=render" >> $GITHUB_OUTPUT
+        fi
+        echo "Current day: $day"
+        echo "Selected platform: $([ $day -le 20 ] && echo "railway" || echo "render")"
+    
+    - name: Deploy to Railway
+      if: steps.platform.outputs.platform == 'railway'
+      run: |
+        echo "🚀 Deploying to Railway..."
+        # Здесь команды для деплоя на Railway
+        
+    - name: Deploy to Render  
+      if: steps.platform.outputs.platform == 'render'
+      run: |
+        echo "🚀 Deploying to Render..."
+        # Здесь команды для деплоя на Render 
